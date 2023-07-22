@@ -8,6 +8,7 @@ Real estate data collecter with added transportation time feature for Real Estat
     * public transportation distance
     * car distance
 * An option or additional spider for alerting the user for newly added real estates
+* Lastly everything will be converted from text output to .xl?? outputs 
 
 ## Platforms planned to be added
 * sahibinden.com
