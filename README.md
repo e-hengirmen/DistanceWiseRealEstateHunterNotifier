@@ -15,4 +15,4 @@ Real estate data collecter with added transportation time feature for Real Estat
 * hepsiemlak.com
 * emlakjet.com
 
-Note:I will either start with sahibinden and hepsiemlak than dd the other 
+Note:I will either start with sahibinden or hepsiemlak than add the other 2
