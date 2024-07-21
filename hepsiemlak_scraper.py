@@ -1,33 +1,130 @@
+import re
+import time
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse, parse_qs, urlencode
+
 from selenium import webdriver
-from selenium.webdriver.common.action_chains import ActionChains
-
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.options import Options
 
-
-
-import time
 
 class hepsiemlak_scraper:
-    
-    realEstateCSS     = "#listPage > div.list-page-wrapper.with-top-banner > div > div > main > div.list-wrap > div > div.listView > ul > li > article > div.list-view-line > div.list-view-img-wrapper > a.img-link"
-    nextPageCSS       = "#listPage > div.list-page-wrapper.with-top-banner > div > div > main > div.list-wrap > div > section > div > a.he-pagination__navigate-text--next"
-    
-    featureListCSS    = "ul.adv-info-list > li"
-    # below 2 wasnt strictly controlled just copy pasted so there might be problems later on
-    estateTitleCSS    = "#__layout > div > div > section.wrapper.detail-page > div > div.det-content.cont-block.left > div.cont-inner > section:nth-child(1) > div:nth-child(1) > div.left > h1"
-    neighboorhoodCSS  = "#__layout > div > div > section.wrapper.detail-page > div > div.det-content.cont-block.left > div.cont-inner > section:nth-child(1) > div.det-title-bottom > ul > li:nth-child(3)"
-    priceCSS          = "p.fz24-text"
 
-    def __init__(self,_driver,_wait,_actions):
-        self.driver  = _driver
-        self.wait    = _wait
-        self.actions = _actions
+    realEstateCSS = "#listPage > div.list-page-wrapper.with-top-banner > div > div > main > div.list-wrap > div > div.listView > ul > li > article > div.list-view-line > div.list-view-img-wrapper > a.img-link"
+    nextPageCSS = "#listPage > div.list-page-wrapper.with-top-banner > div > div > main > div.list-wrap > div > section > div > a.he-pagination__navigate-text--next"
+
+    featureListCSS = "ul.adv-info-list > li"
+    # below 2 wasnt strictly controlled just copy pasted so there might be problems later on
+    estateTitleCSS = "#__layout > div > div > section.wrapper.detail-page > div > div.det-content.cont-block.left > div.cont-inner > section:nth-child(1) > div:nth-child(1) > div.left > h1"
+    neighboorhoodCSS = "#__layout > div > div > section.wrapper.detail-page > div > div.det-content.cont-block.left > div.cont-inner > section:nth-child(1) > div.det-title-bottom > ul > li:nth-child(3)"
+    priceCSS = "p.fz24-text"
+
+    info_list_css = 'ul.short-info-list > li'
+    button_css = 'button[data-v-7ae19ac8]'
+
+    soup_tag = "section"
+    soup_class = "det-block realty-info"
+    title_tag = 'h1'
+    title_class = 'fontRB'
+    price_tag = 'p'
+    price_class = 'fz24-text price'
+    specs_tag = 'li'
+    specs_class = 'spec-item'
+
+    def __init__(self):
+        chrome_options = Options()
+        chrome_options.add_argument("--start-maximized")
+
+        self.driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+        self.wait = WebDriverWait(self.driver, 10)
+        self.actions = ActionChains(self.driver)
+        self.money_regex = re.compile(r'[^\d,]')
+
+    def create_distance_matrix_url(self, origin, destination, api_key):
+        base_url = "https://maps.googleapis.com/maps/api/distancematrix/json?"
+
+        params = {
+            "origins": origin,
+            "destinations": destination,
+            "mode": "transit",
+            "key": api_key
+        }
+
+        url = base_url + urlencode(params)
+        return url
+
+    def scroll_down(self, x):
+        self.driver.execute_script(f'window.scrollBy(0, {x});')
+
+    def scrape_real_estate_data(self, url):
+        self.driver.get(url)
+        info_list = self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, self.info_list_css)))
+        destination_address = ' '.join([info.text.strip() for info in info_list[:3]])
+        self.scroll_down(90)
+        buttons = self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, self.button_css)))
+        maps_button = None
+        for button in buttons:
+            if "Yol Tarifi" in button.text:
+                maps_button = button
+                break
+
+        if maps_button:
+            # self.driver.execute_script("arguments[0].scrollIntoView(true);", maps_button)
+            self.wait.until(EC.element_to_be_clickable(maps_button))
+            maps_button.click()
+            self.wait.until(lambda d: len(self.driver.window_handles) == 2)
+            self.driver.switch_to.window(self.driver.window_handles[1])
+            google_maps_url = self.driver.current_url
+            parsed_url = urlparse(google_maps_url)
+            if 'destination=' in parsed_url.query:
+                coordinates = parse_qs(parsed_url.query).get('destination', [None])[0]
+            else:
+                coordinates = parsed_url.path.strip('/ ').split('/')[3]
+            # if coordinates is not None:
+            #     coord_x, coord_y = coordinates.split(',')
+            self.driver.close()
+            self.driver.switch_to.window(self.driver.window_handles[0])
+        else:
+            pass
+
+        soup = BeautifulSoup(self.driver.page_source, features="lxml").find(self.soup_tag, class_=self.soup_class)
+        title = soup.find(self.title_tag, class_=self.title_class).text.strip()
+        price = self.money_regex.sub('', soup.find(self.price_tag, class_=self.price_class).text).split(',')[0]
+        specs = soup.find_all(self.specs_tag, class_=self.specs_class)
+        specs_dict = {}
+        for spec in specs:
+            spec_tuple = spec.find_all('span')
+            if len(spec_tuple) == 1:
+                specs_dict[spec_tuple[0].text.strip()] = None
+            elif len(spec_tuple) == 2:
+                specs_dict[spec_tuple[0].text.strip()] = spec_tuple[1].text.strip()
+            elif len(spec_tuple) > 2:
+                specs_dict[spec_tuple[0].text.strip()] = "".join([spec_span.text.strip() for spec_span in spec_tuple[1:]])
+
+        return title, price, coordinates, specs_dict
+
+        # Example usage # TODO
+        origin_address_list = [
+            "METU Department of Computer Engineering",
+            "ODTÜ TEKNOKENT MET YERLEŞKESİ, Mustafa Kemal Mah. Dumlupınar Bulvarı No:280 E Blok 2/A, 06510 Çankaya/Ankara",
+        ]
+        api_key = "YOUR_API_KEY"
+
+        for origin_address in origin_address_list[:1]:
+            url = self.create_distance_matrix_url(origin_address, destination_address, api_key)
+            print(url)
+        return 3
+
+
+
+
+
 
     def url_collect(self):
 
