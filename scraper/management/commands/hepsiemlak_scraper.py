@@ -1,5 +1,9 @@
 import re
 import time
+import googlemaps
+import os
+from random import randint
+from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qs, urlencode
 
@@ -13,8 +17,10 @@ from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.options import Options
 
+from django.core.management.base import BaseCommand
+from scraper.models import OriginAdresses, RealEstate, RealEstateOriginDistances
 
-class hepsiemlak_scraper:
+class Command(BaseCommand):
 
     realEstateCSS = "#listPage > div.list-page-wrapper.with-top-banner > div > div > main > div.list-wrap > div > div.listView > ul > li > article > div.list-view-line > div.list-view-img-wrapper > a.img-link"
     nextPageCSS = "#listPage > div.list-page-wrapper.with-top-banner > div > div > main > div.list-wrap > div > section > div > a.he-pagination__navigate-text--next"
@@ -37,6 +43,7 @@ class hepsiemlak_scraper:
     specs_tag = 'li'
     specs_class = 'spec-item'
 
+
     def __init__(self):
         chrome_options = Options()
         chrome_options.add_argument("--start-maximized")
@@ -45,27 +52,67 @@ class hepsiemlak_scraper:
         self.wait = WebDriverWait(self.driver, 10)
         self.actions = ActionChains(self.driver)
         self.money_regex = re.compile(r'[^\d,]')
+        self.google_api_keys = os.getenv('google_api_key').split()
+        self.google_api_index = randint(0, len(self.google_api_keys) -1)
+        
+        self.origin_objs = []
+        self.origins = []
+        for origin in OriginAdresses.objects.all():
+            self.origin_objs.append(origin)
+            self.origins.append(origin.address)
 
-    def create_distance_matrix_url(self, origin, destination, api_key):
-        base_url = "https://maps.googleapis.com/maps/api/distancematrix/json?"
+        departure_time = datetime.now().replace(hour=10, minute=0, second=0, microsecond=0)
+        self.departure_time_timestamp = int(departure_time.timestamp())
+    
+    def get_gkey(self):
+        if len(self.google_api_keys) == 0:
+            print('No api key remaining')
+            return None
+        gkey = self.google_api_keys[self.google_api_index]
+        self.google_api_index = (self.google_api_index + 1) % len(self.google_api_keys)
+        return gkey
+    
+    def failed_gkey_removal(self):
+        previous_index = (self.google_api_index - 1) % len(self.google_api_keys)
+        self.google_api_keys.pop(previous_index)
+        self.google_api_index = (self.google_api_index - 1) % len(self.google_api_keys)
+        
+    def get_distances(self, destinations):
+        gmaps = googlemaps.Client(key=self.get_gkey())
+        ValueError
+        # origins = [
+        #     'METU Department of Computer Engineering',
+        #     'ODTÜ TEKNOKENT MET YERLEŞKESİ, Mustafa Kemal Mah. Dumlupınar Bulvarı No:280 E Blok 2/A, 06510 Çankaya/Ankara',
+        # ]
+        try:
+            result = gmaps.distance_matrix(origins=self.origins, destinations=destinations, mode='transit', departure_time=self.departure_time_timestamp)
+        except Exception as e:
+            self.failed_gkey_removal()
+            return None, None
+        duration_lists = []
+        for row in result['rows']:
+            durations = []
+            duration_lists.append(durations)
+            for element in row['elements']:
+                try:
+                    distance = element['distance']['text']
+                except:
+                    distance = None
+                try:
+                    duration = element['duration']['value']
+                except:
+                    duration = None
+                durations.append(duration)
+        return duration_lists
 
-        params = {
-            "origins": origin,
-            "destinations": destination,
-            "mode": "transit",
-            "key": api_key
-        }
-
-        url = base_url + urlencode(params)
-        return url
 
     def scroll_down(self, x):
         self.driver.execute_script(f'window.scrollBy(0, {x});')
 
     def scrape_real_estate_data(self, url):
         self.driver.get(url)
-        info_list = self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, self.info_list_css)))
-        destination_address = ' '.join([info.text.strip() for info in info_list[:3]])
+        # info_list = self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, self.info_list_css)))
+        # destination_address = ' '.join([info.text.strip() for info in info_list[:3]])
         self.scroll_down(90)
         buttons = self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, self.button_css)))
         maps_button = None
@@ -91,7 +138,7 @@ class hepsiemlak_scraper:
             self.driver.close()
             self.driver.switch_to.window(self.driver.window_handles[0])
         else:
-            pass
+            coordinates = None
 
         soup = BeautifulSoup(self.driver.page_source, features="lxml").find(self.soup_tag, class_=self.soup_class)
         title = soup.find(self.title_tag, class_=self.title_class).text.strip()
@@ -108,18 +155,6 @@ class hepsiemlak_scraper:
                 specs_dict[spec_tuple[0].text.strip()] = "".join([spec_span.text.strip() for spec_span in spec_tuple[1:]])
 
         return title, price, coordinates, specs_dict
-
-        # Example usage # TODO
-        origin_address_list = [
-            "METU Department of Computer Engineering",
-            "ODTÜ TEKNOKENT MET YERLEŞKESİ, Mustafa Kemal Mah. Dumlupınar Bulvarı No:280 E Blok 2/A, 06510 Çankaya/Ankara",
-        ]
-        api_key = "YOUR_API_KEY"
-
-        for origin_address in origin_address_list[:1]:
-            url = self.create_distance_matrix_url(origin_address, destination_address, api_key)
-            print(url)
-        return 3
 
 
 
@@ -153,10 +188,12 @@ class hepsiemlak_scraper:
         ###########
         with open("searchURLs.txt", "r") as URLfile:
             for url in URLfile.readlines():
-                self.driver.get(url)
-                while(True):
-                    if(get_urls_go_next()==False):
-                        break
+                url = url.strip()
+                if url.strip():
+                    self.driver.get(url)
+                    while(True):
+                        if(get_urls_go_next()==False):
+                            break
         ####################
 
 
@@ -167,61 +204,8 @@ class hepsiemlak_scraper:
 
         return website_urls
 
-    feature_switch={
-            "İlan no":"id",
-            "Oda + Salon Sayısı":"room",
-            "Brüt / Net M2":"m2",
-            "Bulunduğu Kat":"floor",
-            "Bina Yaşı":"building age",
-            "Aidat":"aidat",
-
-        }
-    def translate_feature(self,feature_webelement):
-        if feature_webelement.find_element(By.CSS_SELECTOR,"span:first-child").text in self.feature_switch:
-            translated_feature_name=self.feature_switch[feature_webelement.find_element(By.CSS_SELECTOR,"span:first-child").text]
-            feature_value=feature_webelement.find_element(By.CSS_SELECTOR,"span:nth-child(2)").text
-            return translated_feature_name,feature_value
-        return None,None
-
-        
-
-
-
-
-
-    def data_collect(self,url):
-        self.driver.get(url)
-        context={
-            "id":None,
-            "url":url,
-            "title":None,
-            "cost":None,
-            "aidat":None,
-            "m2":None,
-            "room":None,
-            "floor":None,
-            "building age":None,
-            "neighboorhood":None,
-            "walk time":None,
-            "public transport time":None,
-            "car time":None,
-            }
-
-        features      = self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR,self.featureListCSS)))
-        title         = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR,self.estateTitleCSS))).text
-        neighboorhood = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR,self.neighboorhoodCSS))).text
-        price         = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR,self.priceCSS))).text
-
-        # setting features in the big feature list
-        for feature in features:
-            f_name,f_val=self.translate_feature(feature)
-            if f_name:
-                context[f_name]=f_val
-
-        context["title"]         = title
-        context["neighboorhood"] = neighboorhood
-        context["cost"]         = price         
-
-
-        return context
+    def handle(self, *args, **options):
+        website_urls = self.url_collect()
+        old_real_estates = 
+        print(website_urls)
     
