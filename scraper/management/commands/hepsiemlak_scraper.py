@@ -19,6 +19,7 @@ from selenium.webdriver.chrome.options import Options
 
 from django.core.management.base import BaseCommand
 from scraper.models import OriginAdresses, RealEstate, RealEstateOriginDistances
+from scraper.utils.messaging_api import send_message
 
 class Command(BaseCommand):
 
@@ -115,7 +116,7 @@ class Command(BaseCommand):
         self.driver.get(url)
         # info_list = self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, self.info_list_css)))
         # destination_address = ' '.join([info.text.strip() for info in info_list[:3]])
-        self.scroll_down(90)
+        self.scroll_down(180)
         buttons = self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, self.button_css)))
         maps_button = None
         for button in buttons:
@@ -165,23 +166,39 @@ class Command(BaseCommand):
 
     def url_collect(self):
 
-        website_urls=set()
+        website_urls = []
         
         def get_urls_go_next():
             homes = self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR,self.realEstateArticleCSS)))
             pagination_next_page = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR,self.nextPageCSS)))
-
+            real_estates = {
+                real_estate.url: real_estate
+                for real_estate in RealEstate.objects.all()
+            }
             for home in homes:
-                price = home.find_element(By.CSS_SELECTOR, self.realEstatePriceCSS)
+                try:
+                    price_element = home.find_element(By.CSS_SELECTOR, self.realEstatePriceCSS)
+                    price = self.money_regex.sub('', price_element.text).split(',')[0]
+                except:
+                    price = None
                 print(price)
                 link = home.find_element(By.CSS_SELECTOR, self.realEstateLinkCSS)
                 current_url = link.get_attribute('href')
-                website_urls.add(current_url)
+                if url not in real_estates:
+                    website_urls.append(current_url)
+                else:
+                    real_estate = real_estates[url]
+                    old_price = real_estate.price
+                    if price is not None and old_price != price:
+                        real_estate.price = price
+                        real_estate.save()
+                        if old_price > price:
+                            self.send_message_telegram(real_estate)
             if("disabled" not in pagination_next_page.get_attribute("class")):
                 self.actions.move_to_element(pagination_next_page).click(pagination_next_page).perform()
                 return True
             return False
-        ###########
+
         with open("searchURLs.txt", "r") as URLfile:
             for url in URLfile.readlines():
                 url = url.strip()
@@ -190,15 +207,20 @@ class Command(BaseCommand):
                     while(True):
                         if(get_urls_go_next()==False):
                             break
-        ####################
-
-
-        file=open("urlHistory.txt", "a", newline='\n') 
-        for home in website_urls:
-            file.write(home)
-            file.write("\n")
 
         return website_urls
+
+    def send_message_telegram(self,real_estate):
+        m_list = [
+            real_estate.title,
+            str(real_estate.price),
+            real_estate.url,
+            '',
+        ]
+        for key,spec in real_estate.specs_dict.items():
+            m_list.append(f'{key}: {spec}')
+        message = '\n'.join(m_list)
+        send_message(message)
 
     def handle(self, *args, **options):
         website_urls = self.url_collect()
