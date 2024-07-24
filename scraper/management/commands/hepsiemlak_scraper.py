@@ -22,7 +22,9 @@ from scraper.models import OriginAdresses, RealEstate, RealEstateOriginDistances
 
 class Command(BaseCommand):
 
-    realEstateCSS = "#listPage > div.list-page-wrapper.with-top-banner > div > div > main > div.list-wrap > div > div.listView > ul > li > article > div.list-view-line > div.list-view-img-wrapper > a.img-link"
+    realEstateArticleCSS = 'article'
+    realEstateLinkCSS = 'div.list-view-line > div.list-view-img-wrapper > a.img-link'
+    realEstatePriceCSS = 'div.list-view-content > section > div.top > div > span'
     nextPageCSS = "#listPage > div.list-page-wrapper.with-top-banner > div > div > main > div.list-wrap > div > section > div > a.he-pagination__navigate-text--next"
 
     featureListCSS = "ul.adv-info-list > li"
@@ -163,24 +165,18 @@ class Command(BaseCommand):
 
     def url_collect(self):
 
-        # getting previous url set
-        previous_urls=set()
-        with open("urlHistory.txt", "r") as urlHistory:
-            for url in urlHistory.read().split():
-                previous_urls.add(url)
-
-        #################### getting new urls
         website_urls=set()
         
-        ###########
         def get_urls_go_next():
-            homes               =self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR,self.realEstateCSS)))
-            pagination_next_page=self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR,self.nextPageCSS)))
+            homes = self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR,self.realEstateArticleCSS)))
+            pagination_next_page = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR,self.nextPageCSS)))
 
             for home in homes:
-                current_url=home.get_attribute('href')
-                if current_url not in previous_urls:
-                    website_urls.add(current_url)
+                price = home.find_element(By.CSS_SELECTOR, self.realEstatePriceCSS)
+                print(price)
+                link = home.find_element(By.CSS_SELECTOR, self.realEstateLinkCSS)
+                current_url = link.get_attribute('href')
+                website_urls.add(current_url)
             if("disabled" not in pagination_next_page.get_attribute("class")):
                 self.actions.move_to_element(pagination_next_page).click(pagination_next_page).perform()
                 return True
@@ -206,6 +202,6 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         website_urls = self.url_collect()
-        old_real_estates = 
+        # old_real_estates = {real_estate.url:real_estate for real_estate in RealEstate.objects.all()}
         print(website_urls)
     
