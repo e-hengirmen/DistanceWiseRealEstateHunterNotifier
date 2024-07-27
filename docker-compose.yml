@@ -11,6 +11,7 @@ services:
       MYSQL_PASSWORD: password
     volumes:
       - db_data:/var/lib/mysql
+      - ./mariadb.cnf:/etc/mysql/conf.d/mariadb.cnf
     ports:
       - "3306:3306"
 
