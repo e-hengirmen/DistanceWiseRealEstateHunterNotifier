@@ -9,7 +9,7 @@ class RealEstate(models.Model):
     url = models.URLField(max_length=255,unique=True)
     title = models.CharField(max_length=128)
     price = models.CharField(max_length=50)
-    coordinates = models.CharField(max_length=50)
+    coordinates = models.CharField(max_length=50, null=True)
     specs_dict = models.JSONField()
 
 class RealEstateOriginDistances(models.Model):

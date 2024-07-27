@@ -1,5 +1,5 @@
 import re
-import time
+from time import sleep
 import googlemaps
 import os
 from random import randint
@@ -20,13 +20,22 @@ from selenium.webdriver.chrome.options import Options
 from django.core.management.base import BaseCommand
 from scraper.models import OriginAdresses, RealEstate, RealEstateOriginDistances
 from scraper.utils.messaging_api import send_message
+from scraper.utils.request_handler import get_soup, create_link_from_href
+import random
+
+def random_sleep():
+    sleep(random.uniform(1, 5))
+
+class CaptchaWantedException(Exception):
+    pass
 
 class Command(BaseCommand):
 
     realEstateArticleCSS = 'article'
     realEstateLinkCSS = 'div.list-view-line > div.list-view-img-wrapper > a.img-link'
     realEstatePriceCSS = 'div.list-view-content > section > div.top > div > span'
-    nextPageCSS = "#listPage > div.list-page-wrapper.with-top-banner > div > div > main > div.list-wrap > div > section > div > a.he-pagination__navigate-text--next"
+    nextPageCSS = "a.he-pagination__navigate-text--next"
+    nextPageDisabledClass= 'he-pagination__navigate-text--disabled'
 
     featureListCSS = "ul.adv-info-list > li"
     # below 2 wasnt strictly controlled just copy pasted so there might be problems later on
@@ -62,6 +71,11 @@ class Command(BaseCommand):
         for origin in OriginAdresses.objects.all():
             self.origin_objs.append(origin)
             self.origins.append(origin.address)
+        
+        self.old_real_estates = {
+            real_estate.url: real_estate
+            for real_estate in RealEstate.objects.all()
+        }
 
         departure_time = datetime.now().replace(hour=10, minute=0, second=0, microsecond=0)
         self.departure_time_timestamp = int(departure_time.timestamp())
@@ -90,10 +104,10 @@ class Command(BaseCommand):
                 self.failed_gkey_removal()
             except Exception as e:
                 print(e)
+                print('DURATION ERROR OCCURRED')
                 return None
             return self.get_distances(destinations)
         duration_lists = []
-        print(result)
         for row in result['rows']:
             durations = []
             duration_lists.append(durations)
@@ -115,17 +129,21 @@ class Command(BaseCommand):
 
     def scrape_real_estate_data(self, url):
         self.driver.get(url)
+        print(f'here {self.counter}/{self.to_be_scraped_count}', flush=True)
+        random_sleep()       # othwise we get 428
+        print('after sleep', flush=True)
+        recapthcha=self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, '#recaptcha')))
+        if recapthcha:
+            raise CaptchaWantedException()
         # info_list = self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, self.info_list_css)))
         # destination_address = ' '.join([info.text.strip() for info in info_list[:3]])
         self.scroll_down(180)
         buttons = self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, self.button_css)))
         maps_button = None
-        print(buttons)
         for button in buttons:
             if "Yol Tarifi" in button.text:
                 maps_button = button
                 break
-        print(maps_button.text)
 
         if maps_button:
             # self.driver.execute_script("arguments[0].scrollIntoView(true);", maps_button)
@@ -167,7 +185,7 @@ class Command(BaseCommand):
 
 
 
-    def url_collect(self):
+    def url_collect_old_selenium(self):
 
         website_urls = []
         
@@ -187,7 +205,6 @@ class Command(BaseCommand):
                     price = self.money_regex.sub('', price_element.text).split(',')[0]
                 except:
                     price = None
-                print(price)
                 link = home.find_element(By.CSS_SELECTOR, self.realEstateLinkCSS)
                 real_estate_url = link.get_attribute('href')
                 if real_estate_url not in real_estates:
@@ -216,8 +233,62 @@ class Command(BaseCommand):
 
         return website_urls
     
+    def url_collect(self):
+        website_urls = []
+        
+        def get_urls_go_next(url):
+            soup = get_soup(url, cloudflare=True)
+            random_sleep()  # so that we dont get 429
+            for listing in soup.find_all(self.realEstateArticleCSS):
+                link_href = listing.select_one(self.realEstateLinkCSS)['href']
+                real_estate_url = create_link_from_href(url, link_href)
+                try:
+                    price_element = listing.select_one(self.realEstatePriceCSS)
+                    price = self.money_regex.sub('', price_element.text).split(',')[0]
+                except:
+                    price = None
+                if real_estate_url not in self.old_real_estates:
+                    website_urls.append(real_estate_url)
+                else:
+                    real_estate = self.old_real_estates[real_estate_url]
+                    old_price = real_estate.price
+                    if price is not None and old_price != price:
+                        real_estate.price = price
+                        real_estate.save()
+                        if old_price > price:
+                            self.send_message_telegram(real_estate)
+            try:
+                pagination_next_page_element = soup.select_one(self.nextPageCSS)
+                if self.nextPageDisabledClass in pagination_next_page_element.get('class'):
+                    pagination_next_page_url = None
+                else:
+                   pagination_next_page_url = create_link_from_href(url, pagination_next_page_element['href'])
+            except:
+                pagination_next_page_url = None
+            if pagination_next_page_url:
+                get_urls_go_next(pagination_next_page_url)
 
-    def send_message_telegram(self,real_estate):
+        with open("searchURLs.txt", "r") as URLfile:
+            for url in URLfile.readlines():
+                url = url.strip()
+                if url.strip():
+                    get_urls_go_next(url)
+
+        return website_urls
+    
+    def send_message_telegram(self,real_estate):  # add aditional conditionals here if you want
+        send = True
+        for distance_obj in RealEstateOriginDistances.objects.filter(destination=real_estate):
+            if distance_obj.duration is None:
+                send = False
+                break
+            if 2760 < distance_obj.duration:
+                send = False
+                break
+        if send:
+            self.send_message_telegram_messager(real_estate)
+
+    def send_message_telegram_messager(self,real_estate):
         distances = " - ".join(['distances:'] + [
             f'{rel.duration // 3600}h {(rel.duration % 3600) // 60}m {rel.duration % 60}s'
             for rel in RealEstateOriginDistances.objects.filter(
@@ -238,39 +309,40 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         new_website_urls = self.url_collect()
-        print(new_website_urls)
+        self.to_be_scraped_count = len(new_website_urls)
+        self.counter = 0
+        print('new website count:', len(new_website_urls))
         print()
         real_estate_list = []
+        real_estate_with_coord_list = []
         destinations = []
         for url in new_website_urls:
-            # try:
-            title, price, coordinates, specs_dict = self.scrape_real_estate_data(url)
-            print(title, price, coordinates, specs_dict)
-            # except Exception as e:
-            #     print(f'ERROR:{str(e)}')
-            #     continue
-            real_estate = RealEstate(
-                url=url,
-                title=title,
-                price=price,
-                coordinates=coordinates,
-                specs_dict=specs_dict
-            )
-            real_estate.save()
-            print(real_estate)
-            real_estate_list.append(real_estate)
-            destinations.append(real_estate.coordinates)
+            try:
+                title, price, coordinates, specs_dict = self.scrape_real_estate_data(url)
+                real_estate = RealEstate(
+                    url=url,
+                    title=title,
+                    price=price,
+                    coordinates=coordinates,
+                    specs_dict=specs_dict
+                )
+                real_estate.save()
+                if real_estate.coordinates:
+                    real_estate_with_coord_list.append(real_estate)
+                    destinations.append(real_estate.coordinates)
+                real_estate_list.append(real_estate)
+            except CaptchaWantedException:
+                with open('errors.log', 'a') as error_file:
+                    error_file.write(f'Error: Captcha wanted\n\n')
+                break
+            except Exception as e:
+                with open('errors.log', 'a') as error_file:
+                    error_file.write(f'{str(e)}\n\n')
+
         duration_lists = self.get_distances(destinations)
-        print(real_estate_list, flush=True)
-        print(destinations, flush=True)
-        print(duration_lists, flush=True)
-        print(flush=True)
-        print(flush=True)
-        print(flush=True)
         if duration_lists:
             for origin_obj, duration_list in zip(self.origin_objs, duration_lists):
-                for real_estate, duration in zip(real_estate_list, duration_list):
-                    print("duration",duration)
+                for real_estate, duration in zip(real_estate_with_coord_list, duration_list):
                     RealEstateOriginDistances(
                         origin=origin_obj,
                         destination=real_estate,
