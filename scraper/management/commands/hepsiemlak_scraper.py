@@ -17,8 +17,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.options import Options
 
+from django.utils import timezone
 from django.core.management.base import BaseCommand
-from scraper.models import OriginAdresses, RealEstate, RealEstateOriginDistances
+from scraper.models import OriginAdresses, RealEstate, RealEstateOriginDistances, HepsiEmlakScraperLogs
 from scraper.utils.messaging_api import send_message
 from scraper.utils.request_handler import get_soup, create_link_from_href
 import random
@@ -96,10 +97,17 @@ class Command(BaseCommand):
             raise Exception('No api keys remaining')
         
     def get_distances(self, destinations):
+        if not destinations or not self.origins:
+            return []
         gmaps = googlemaps.Client(key=self.get_gkey())
         try:
+            print(self.origins)
+            print(destinations)
             result = gmaps.distance_matrix(origins=self.origins, destinations=destinations, mode='transit', departure_time=self.departure_time_timestamp)
+            with open('gmaps_res.txt', 'w') as gmap_file:
+                gmap_file.write(str(result))
         except Exception as e:
+            print(e)
             try:
                 self.failed_gkey_removal()
             except Exception as e:
@@ -129,10 +137,13 @@ class Command(BaseCommand):
 
     def scrape_real_estate_data(self, url):
         self.driver.get(url)
+        self.counter += 1
         print(f'here {self.counter}/{self.to_be_scraped_count}', flush=True)
-        random_sleep()       # othwise we get 428
         print('after sleep', flush=True)
-        recapthcha=self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, '#recaptcha')))
+        try:
+            recapthcha=self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, '#recaptcha'))) # waits for 5 seconds unless failure solving random sleep
+        except:
+            recapthcha = None
         if recapthcha:
             raise CaptchaWantedException()
         # info_list = self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, self.info_list_css)))
@@ -283,8 +294,12 @@ class Command(BaseCommand):
                 send = False
                 break
             if 2760 < distance_obj.duration:
-                send = False
-                break
+                if not (
+                    3600 > distance_obj.duration and
+                    16500 >= real_estate.price
+                ):
+                    send = False
+                    break
         if send:
             self.send_message_telegram_messager(real_estate)
 
@@ -307,7 +322,7 @@ class Command(BaseCommand):
         message = '\n'.join(m_list)
         send_message(message)
 
-    def handle(self, *args, **options):
+    def process(self, *args, **options):
         new_website_urls = self.url_collect()
         self.to_be_scraped_count = len(new_website_urls)
         self.counter = 0
@@ -317,28 +332,27 @@ class Command(BaseCommand):
         real_estate_with_coord_list = []
         destinations = []
         for url in new_website_urls:
-            try:
-                title, price, coordinates, specs_dict = self.scrape_real_estate_data(url)
-                real_estate = RealEstate(
-                    url=url,
-                    title=title,
-                    price=price,
-                    coordinates=coordinates,
-                    specs_dict=specs_dict
-                )
-                real_estate.save()
-                if real_estate.coordinates:
-                    real_estate_with_coord_list.append(real_estate)
-                    destinations.append(real_estate.coordinates)
-                real_estate_list.append(real_estate)
-            except CaptchaWantedException:
-                with open('errors.log', 'a') as error_file:
-                    error_file.write(f'Error: Captcha wanted\n\n')
-                break
-            except Exception as e:
-                with open('errors.log', 'a') as error_file:
-                    error_file.write(f'{str(e)}\n\n')
-
+            # try:
+            title, price, coordinates, specs_dict = self.scrape_real_estate_data(url)
+            real_estate = RealEstate(
+                url=url,
+                title=title,
+                price=price,
+                coordinates=coordinates,
+                specs_dict=specs_dict
+            )
+            real_estate.save()
+            if real_estate.coordinates:
+                real_estate_with_coord_list.append(real_estate)
+                destinations.append(real_estate.coordinates)
+            real_estate_list.append(real_estate)
+            # except CaptchaWantedException:
+            #     with open('errors.log', 'a') as error_file:
+            #         error_file.write(f'Error: Captcha wanted\n\n')
+            #     break
+            # except Exception as e:
+            #     with open('errors.log', 'a') as error_file:
+            #         error_file.write(f'{e}\n\n')
         duration_lists = self.get_distances(destinations)
         if duration_lists:
             for origin_obj, duration_list in zip(self.origin_objs, duration_lists):
@@ -350,6 +364,19 @@ class Command(BaseCommand):
                     ).save()
         for real_estate in real_estate_list:
             self.send_message_telegram(real_estate)
+
+    def handle(self, *args, **options):
+        start_time = timezone.now()
+        self.process(*args, **options)
+        end_time = timezone.now()
+        HepsiEmlakScraperLogs(
+            duration=end_time-start_time,
+            realestate_count=self.counter,
+            relation_count=3,
+        ).save()
+
+        
+        
 
                             
     
