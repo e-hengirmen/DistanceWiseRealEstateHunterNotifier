@@ -106,7 +106,7 @@ class Command(BaseCommand):
             result = gmaps.distance_matrix(origins=self.origins, destinations=destinations, mode='transit', departure_time=self.departure_time_timestamp)
             with open('gmaps_res.txt', 'w') as gmap_file:
                 gmap_file.write(str(result))
-        except Exception as e:
+        except googlemaps.exceptions.ApiError as e:
             print(e)
             try:
                 self.failed_gkey_removal()
@@ -115,6 +115,10 @@ class Command(BaseCommand):
                 print('DURATION ERROR OCCURRED')
                 return None
             return self.get_distances(destinations)
+        except Exception as e:
+            with open('errors.log', 'a') as error_file:
+                error_file.write(f'{e}\n\n')
+
         duration_lists = []
         for row in result['rows']:
             durations = []
@@ -332,27 +336,27 @@ class Command(BaseCommand):
         real_estate_with_coord_list = []
         destinations = []
         for url in new_website_urls:
-            # try:
-            title, price, coordinates, specs_dict = self.scrape_real_estate_data(url)
-            real_estate = RealEstate(
-                url=url,
-                title=title,
-                price=price,
-                coordinates=coordinates,
-                specs_dict=specs_dict
-            )
-            real_estate.save()
-            if real_estate.coordinates:
-                real_estate_with_coord_list.append(real_estate)
-                destinations.append(real_estate.coordinates)
-            real_estate_list.append(real_estate)
-            # except CaptchaWantedException:
-            #     with open('errors.log', 'a') as error_file:
-            #         error_file.write(f'Error: Captcha wanted\n\n')
-            #     break
-            # except Exception as e:
-            #     with open('errors.log', 'a') as error_file:
-            #         error_file.write(f'{e}\n\n')
+            try:
+                title, price, coordinates, specs_dict = self.scrape_real_estate_data(url)
+                real_estate = RealEstate(
+                    url=url,
+                    title=title,
+                    price=price,
+                    coordinates=coordinates,
+                    specs_dict=specs_dict
+                )
+                real_estate.save()
+                if real_estate.coordinates:
+                    real_estate_with_coord_list.append(real_estate)
+                    destinations.append(real_estate.coordinates)
+                real_estate_list.append(real_estate)
+            except CaptchaWantedException:
+                with open('errors.log', 'a') as error_file:
+                    error_file.write(f'Error: Captcha wanted\n\n')
+                break
+            except Exception as e:
+                with open('errors.log', 'a') as error_file:
+                    error_file.write(f'{e}\n\n')
         duration_lists = self.get_distances(destinations)
         if duration_lists:
             for origin_obj, duration_list in zip(self.origin_objs, duration_lists):
