@@ -35,8 +35,7 @@ class Command(BaseCommand):
     priceCSS = "p.fz24-text"
 
     info_list_css = 'ul.short-info-list > li'
-    button_css = 'button[data-v-7ae19ac8]'
-
+    button_css = 'section > div.det-title-upper.det-title-middle > div.left > ul > li'
     soup_tag = "section"
     soup_class = "det-block realty-info"
     title_tag = 'h1'
@@ -79,20 +78,22 @@ class Command(BaseCommand):
         previous_index = (self.google_api_index - 1) % len(self.google_api_keys)
         self.google_api_keys.pop(previous_index)
         self.google_api_index = (self.google_api_index - 1) % len(self.google_api_keys)
+        if len(self.google_api_keys) == 0:
+            raise Exception('No api keys remaining')
         
     def get_distances(self, destinations):
         gmaps = googlemaps.Client(key=self.get_gkey())
-        ValueError
-        # origins = [
-        #     'METU Department of Computer Engineering',
-        #     'ODTÜ TEKNOKENT MET YERLEŞKESİ, Mustafa Kemal Mah. Dumlupınar Bulvarı No:280 E Blok 2/A, 06510 Çankaya/Ankara',
-        # ]
         try:
             result = gmaps.distance_matrix(origins=self.origins, destinations=destinations, mode='transit', departure_time=self.departure_time_timestamp)
         except Exception as e:
-            self.failed_gkey_removal()
-            return None, None
+            try:
+                self.failed_gkey_removal()
+            except Exception as e:
+                print(e)
+                return None
+            return self.get_distances(destinations)
         duration_lists = []
+        print(result)
         for row in result['rows']:
             durations = []
             duration_lists.append(durations)
@@ -119,10 +120,12 @@ class Command(BaseCommand):
         self.scroll_down(180)
         buttons = self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, self.button_css)))
         maps_button = None
+        print(buttons)
         for button in buttons:
             if "Yol Tarifi" in button.text:
                 maps_button = button
                 break
+        print(maps_button.text)
 
         if maps_button:
             # self.driver.execute_script("arguments[0].scrollIntoView(true);", maps_button)
@@ -170,7 +173,10 @@ class Command(BaseCommand):
         
         def get_urls_go_next():
             homes = self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR,self.realEstateArticleCSS)))
-            pagination_next_page = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR,self.nextPageCSS)))
+            try:
+                pagination_next_page = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR,self.nextPageCSS)))
+            except:
+                pagination_next_page = None
             real_estates = {
                 real_estate.url: real_estate
                 for real_estate in RealEstate.objects.all()
@@ -183,18 +189,18 @@ class Command(BaseCommand):
                     price = None
                 print(price)
                 link = home.find_element(By.CSS_SELECTOR, self.realEstateLinkCSS)
-                current_url = link.get_attribute('href')
-                if url not in real_estates:
-                    website_urls.append(current_url)
+                real_estate_url = link.get_attribute('href')
+                if real_estate_url not in real_estates:
+                    website_urls.append(real_estate_url)
                 else:
-                    real_estate = real_estates[url]
+                    real_estate = real_estates[real_estate_url]
                     old_price = real_estate.price
                     if price is not None and old_price != price:
                         real_estate.price = price
                         real_estate.save()
                         if old_price > price:
                             self.send_message_telegram(real_estate)
-            if("disabled" not in pagination_next_page.get_attribute("class")):
+            if pagination_next_page and ("disabled" not in pagination_next_page.get_attribute("class")):
                 self.actions.move_to_element(pagination_next_page).click(pagination_next_page).perform()
                 return True
             return False
@@ -209,13 +215,21 @@ class Command(BaseCommand):
                             break
 
         return website_urls
+    
 
     def send_message_telegram(self,real_estate):
+        distances = " - ".join(['distances:'] + [
+            f'{rel.duration // 3600}h {(rel.duration % 3600) // 60}m {rel.duration % 60}s'
+            for rel in RealEstateOriginDistances.objects.filter(
+                destination=real_estate
+            ).order_by('origin_id')
+        ])
         m_list = [
             real_estate.title,
             str(real_estate.price),
             real_estate.url,
             '',
+            distances,
         ]
         for key,spec in real_estate.specs_dict.items():
             m_list.append(f'{key}: {spec}')
@@ -223,7 +237,47 @@ class Command(BaseCommand):
         send_message(message)
 
     def handle(self, *args, **options):
-        website_urls = self.url_collect()
-        # old_real_estates = {real_estate.url:real_estate for real_estate in RealEstate.objects.all()}
-        print(website_urls)
+        new_website_urls = self.url_collect()
+        print(new_website_urls)
+        print()
+        real_estate_list = []
+        destinations = []
+        for url in new_website_urls:
+            # try:
+            title, price, coordinates, specs_dict = self.scrape_real_estate_data(url)
+            print(title, price, coordinates, specs_dict)
+            # except Exception as e:
+            #     print(f'ERROR:{str(e)}')
+            #     continue
+            real_estate = RealEstate(
+                url=url,
+                title=title,
+                price=price,
+                coordinates=coordinates,
+                specs_dict=specs_dict
+            )
+            real_estate.save()
+            print(real_estate)
+            real_estate_list.append(real_estate)
+            destinations.append(real_estate.coordinates)
+        duration_lists = self.get_distances(destinations)
+        print(real_estate_list, flush=True)
+        print(destinations, flush=True)
+        print(duration_lists, flush=True)
+        print(flush=True)
+        print(flush=True)
+        print(flush=True)
+        if duration_lists:
+            for origin_obj, duration_list in zip(self.origin_objs, duration_lists):
+                for real_estate, duration in zip(real_estate_list, duration_list):
+                    print("duration",duration)
+                    RealEstateOriginDistances(
+                        origin=origin_obj,
+                        destination=real_estate,
+                        duration=duration,
+                    ).save()
+        for real_estate in real_estate_list:
+            self.send_message_telegram(real_estate)
+
+                            
     
