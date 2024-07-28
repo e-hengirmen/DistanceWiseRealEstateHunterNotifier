@@ -7,8 +7,8 @@ class OriginAdresses(models.Model):
 
 class RealEstate(models.Model):
     url = models.URLField(max_length=255,unique=True)
-    title = models.CharField(max_length=128)
-    price = models.CharField(max_length=50)
+    title = models.CharField(max_length=128, null=True)
+    price = models.IntegerField()
     coordinates = models.CharField(max_length=50, null=True)
     specs_dict = models.JSONField()
 

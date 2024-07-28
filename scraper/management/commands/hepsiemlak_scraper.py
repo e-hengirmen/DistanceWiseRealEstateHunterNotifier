@@ -104,7 +104,7 @@ class Command(BaseCommand):
             print(self.origins)
             print(destinations)
             result = gmaps.distance_matrix(origins=self.origins, destinations=destinations, mode='transit', departure_time=self.departure_time_timestamp)
-            with open('gmaps_res.txt', 'w') as gmap_file:
+            with open('/home/ehengirmen/github/DistanceWiseRealEstateHunterNotifier/gmaps_res.txt', 'w') as gmap_file:
                 gmap_file.write(str(result))
         except googlemaps.exceptions.ApiError as e:
             print(e)
@@ -116,7 +116,7 @@ class Command(BaseCommand):
                 return None
             return self.get_distances(destinations)
         except Exception as e:
-            with open('errors.log', 'a') as error_file:
+            with open('/home/ehengirmen/github/DistanceWiseRealEstateHunterNotifier/errors.log', 'a') as error_file:
                 error_file.write(f'{e}\n\n')
 
         duration_lists = []
@@ -142,8 +142,9 @@ class Command(BaseCommand):
     def scrape_real_estate_data(self, url):
         self.driver.get(url)
         self.counter += 1
+        print()
         print(f'here {self.counter}/{self.to_be_scraped_count}', flush=True)
-        print('after sleep', flush=True)
+        print(url, flush=True)
         try:
             recapthcha=self.wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, '#recaptcha'))) # waits for 5 seconds unless failure solving random sleep
         except:
@@ -181,7 +182,7 @@ class Command(BaseCommand):
 
         soup = BeautifulSoup(self.driver.page_source, features="lxml").find(self.soup_tag, class_=self.soup_class)
         title = soup.find(self.title_tag, class_=self.title_class).text.strip()
-        price = self.money_regex.sub('', soup.find(self.price_tag, class_=self.price_class).text).split(',')[0]
+        price =int(self.money_regex.sub('', soup.find(self.price_tag, class_=self.price_class).text).split(',')[0])
         specs = soup.find_all(self.specs_tag, class_=self.specs_class)
         specs_dict = {}
         for spec in specs:
@@ -217,7 +218,7 @@ class Command(BaseCommand):
             for home in homes:
                 try:
                     price_element = home.find_element(By.CSS_SELECTOR, self.realEstatePriceCSS)
-                    price = self.money_regex.sub('', price_element.text).split(',')[0]
+                    price = int(self.money_regex.sub('', price_element.text).split(',')[0])
                 except:
                     price = None
                 link = home.find_element(By.CSS_SELECTOR, self.realEstateLinkCSS)
@@ -259,7 +260,7 @@ class Command(BaseCommand):
                 real_estate_url = create_link_from_href(url, link_href)
                 try:
                     price_element = listing.select_one(self.realEstatePriceCSS)
-                    price = self.money_regex.sub('', price_element.text).split(',')[0]
+                    price = int(self.money_regex.sub('', price_element.text).split(',')[0])
                 except:
                     price = None
                 if real_estate_url not in self.old_real_estates:
@@ -293,7 +294,10 @@ class Command(BaseCommand):
     
     def send_message_telegram(self,real_estate):  # add aditional conditionals here if you want
         send = True
-        for distance_obj in RealEstateOriginDistances.objects.filter(destination=real_estate):
+        qset = RealEstateOriginDistances.objects.filter(destination=real_estate)
+        if not qset.count():
+            send = False
+        for distance_obj in qset:
             if distance_obj.duration is None:
                 send = False
                 break
@@ -330,12 +334,14 @@ class Command(BaseCommand):
         new_website_urls = self.url_collect()
         self.to_be_scraped_count = len(new_website_urls)
         self.counter = 0
-        print('new website count:', len(new_website_urls))
+        print('new listing count:', len(new_website_urls))
         print()
         real_estate_list = []
         real_estate_with_coord_list = []
         destinations = []
+        counter = 0
         for url in new_website_urls:
+            counter += 1
             try:
                 title, price, coordinates, specs_dict = self.scrape_real_estate_data(url)
                 real_estate = RealEstate(
@@ -351,12 +357,30 @@ class Command(BaseCommand):
                     destinations.append(real_estate.coordinates)
                 real_estate_list.append(real_estate)
             except CaptchaWantedException:
-                with open('errors.log', 'a') as error_file:
+                with open('/home/ehengirmen/github/DistanceWiseRealEstateHunterNotifier/errors.log', 'a') as error_file:
                     error_file.write(f'Error: Captcha wanted\n\n')
                 break
             except Exception as e:
-                with open('errors.log', 'a') as error_file:
+                with open('/home/ehengirmen/github/DistanceWiseRealEstateHunterNotifier/errors.log', 'a') as error_file:
                     error_file.write(f'{e}\n\n')
+            if counter % 25 == 0:  # googlemaps api accepts up to 25 origin/destinations
+                # getting durations with google's api and saving them 
+                duration_lists = self.get_distances(destinations)
+                if duration_lists:
+                    for origin_obj, duration_list in zip(self.origin_objs, duration_lists):
+                        for real_estate, duration in zip(real_estate_with_coord_list, duration_list):
+                            RealEstateOriginDistances(
+                                origin=origin_obj,
+                                destination=real_estate,
+                                duration=duration,
+                            ).save()
+                # sending messages through telegram
+                for real_estate in real_estate_list:
+                    self.send_message_telegram(real_estate)
+                # resetting containers to not repeat any messages
+                real_estate_list = []
+                real_estate_with_coord_list = []
+                destinations = []
         duration_lists = self.get_distances(destinations)
         if duration_lists:
             for origin_obj, duration_list in zip(self.origin_objs, duration_lists):
@@ -366,8 +390,10 @@ class Command(BaseCommand):
                         destination=real_estate,
                         duration=duration,
                     ).save()
+        # sending messages through telegram
         for real_estate in real_estate_list:
             self.send_message_telegram(real_estate)
+
 
     def handle(self, *args, **options):
         start_time = timezone.now()
